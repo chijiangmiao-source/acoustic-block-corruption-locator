@@ -103,6 +103,9 @@ def test_over_max_size_returns_413():
 def test_missing_file_field_rejected():
     resp = client.post("/inspect", files={"wrong": ("a.bin", b"ACLG")})
     assert resp.status_code == 422
+    body = resp.json()
+    assert body["status"] == "FAIL"
+    assert body["error"]["code"] == "PARAM_INVALID"
 
 
 def test_block_stats_included_when_requested():
@@ -139,8 +142,11 @@ def test_block_stats_empty_record_returns_empty_list():
 def test_unparseable_include_block_stats_returns_422():
     resp = post(make_record([1]), params={"include_block_stats": "maybe"})
     assert resp.status_code == 422
-    errors = resp.json()["detail"]
-    assert any(e["loc"][-1] == "include_block_stats" for e in errors)
+    body = resp.json()
+    assert body["status"] == "FAIL"
+    assert body["error"]["code"] == "PARAM_INVALID"
+    assert body["error"]["block_index"] is None
+    assert "include_block_stats" in body["error"]["message"]
 
 
 def test_failed_record_never_carries_block_stats():

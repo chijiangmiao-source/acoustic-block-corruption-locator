@@ -34,6 +34,9 @@ class ErrorCode(StrEnum):
     HEADER_INVALID = "HEADER_INVALID"
     TRUNCATED_BLOCK = "TRUNCATED_BLOCK"
     TRAILING_BYTES = "TRAILING_BYTES"
+    # Raised by the API layer (never by the parser) when request
+    # parameters fail validation, e.g. an unparseable include_block_stats.
+    PARAM_INVALID = "PARAM_INVALID"
 
 
 class RecordError(Exception):

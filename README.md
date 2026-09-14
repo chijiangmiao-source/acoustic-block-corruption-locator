@@ -39,7 +39,7 @@
 ### `POST /inspect`
 
 `multipart/form-data`，文件字段名 `file`。可选查询参数 `include_block_stats=true`
-在放行响应中附加逐块样本摘要（无法解析为布尔值时返回 `422` 参数错误）。
+在放行响应中附加逐块样本摘要（参数无法解析时返回 `422`，同样为 FAIL 信封）。
 
 - 合法记录 → `200 OK`：
 
@@ -63,6 +63,13 @@
 
   ```json
   {"status": "FAIL", "error": {"code": "TRUNCATED_BLOCK", "message": "block 1: ...", "block_index": 1}}
+  ```
+
+- 参数非法（如 `include_block_stats=maybe`、缺少 `file` 字段）→ 同一 FAIL 信封，
+  `code` 为 `PARAM_INVALID`，`block_index` 为 `null`：
+
+  ```json
+  {"status": "FAIL", "error": {"code": "PARAM_INVALID", "message": "invalid parameter query.include_block_stats: ...", "block_index": null}}
   ```
 
 - 超过 8 MiB → `413 Payload Too Large`

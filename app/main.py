@@ -1,9 +1,10 @@
 """FastAPI application: synchronous upload-and-inspect endpoint for ACLG records."""
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from .parser import RecordError, parse_record
+from .parser import ErrorCode, RecordError, parse_record
 from .schemas import BlockStatsBody, ErrorBody, FailResponse, PassResponse
 
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # 8 MiB
@@ -20,12 +21,31 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.exception_handler(RequestValidationError)
+async def invalid_request_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Map parameter-validation failures onto the documented FAIL envelope.
+
+    The OpenAPI contract declares FailResponse for 422, so unparseable
+    parameters (e.g. include_block_stats=maybe) must not leak FastAPI's
+    default {"detail": [...]} shape.
+    """
+    first = exc.errors()[0] if exc.errors() else {}
+    loc = ".".join(str(part) for part in first.get("loc", ()))
+    detail = first.get("msg", "invalid request")
+    message = f"invalid parameter {loc}: {detail}" if loc else f"invalid request: {detail}"
+    body = FailResponse(error=ErrorBody(code=ErrorCode.PARAM_INVALID, message=message))
+    return JSONResponse(status_code=422, content=body.model_dump(mode="json"))
+
+
 @app.post(
     "/inspect",
     response_model=PassResponse,
     responses={
         413: {"description": "Upload exceeds the 8 MiB limit"},
-        422: {"model": FailResponse, "description": "Record failed structural validation"},
+        422: {
+            "model": FailResponse,
+            "description": "Record failed structural validation, or a request parameter is invalid",
+        },
     },
 )
 async def inspect(

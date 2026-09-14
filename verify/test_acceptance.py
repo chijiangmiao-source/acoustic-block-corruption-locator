@@ -174,3 +174,7 @@ def test_truncated_tail_reports_only_the_error_without_block_stats(client):
 def test_unparseable_include_block_stats_returns_422(client):
     resp = inspect(client, make_record([1]), params={"include_block_stats": "maybe"})
     assert resp.status_code == 422
+    body = resp.json()
+    assert body["status"] == "FAIL"
+    assert body["error"]["code"] == "PARAM_INVALID"
+    assert body["error"]["block_index"] is None
