@@ -4,7 +4,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 from .parser import RecordError, parse_record
-from .schemas import ErrorBody, FailResponse, PassResponse
+from .schemas import BlockStatsBody, ErrorBody, FailResponse, PassResponse
 
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # 8 MiB
 
@@ -28,7 +28,10 @@ def health() -> dict[str, str]:
         422: {"model": FailResponse, "description": "Record failed structural validation"},
     },
 )
-async def inspect(file: UploadFile = File(...)) -> PassResponse | JSONResponse:
+async def inspect(
+    file: UploadFile = File(...),
+    include_block_stats: bool = False,
+) -> PassResponse | JSONResponse:
     # Read at most one byte past the limit so oversize uploads are rejected
     # without buffering the whole body.
     data = await file.read(MAX_UPLOAD_BYTES + 1)
@@ -39,7 +42,7 @@ async def inspect(file: UploadFile = File(...)) -> PassResponse | JSONResponse:
         )
 
     try:
-        summary = parse_record(data)
+        summary = parse_record(data, include_block_stats=include_block_stats)
     except RecordError as exc:
         body = FailResponse(
             error=ErrorBody(code=exc.code, message=exc.message, block_index=exc.block_index)
@@ -49,4 +52,17 @@ async def inspect(file: UploadFile = File(...)) -> PassResponse | JSONResponse:
     return PassResponse(
         block_count=summary.block_count,
         total_samples=summary.total_samples,
+        block_stats=(
+            [
+                BlockStatsBody(
+                    index=block.index,
+                    sample_count=block.sample_count,
+                    min=block.min,
+                    max=block.max,
+                )
+                for block in summary.block_stats
+            ]
+            if summary.block_stats is not None
+            else None
+        ),
     )

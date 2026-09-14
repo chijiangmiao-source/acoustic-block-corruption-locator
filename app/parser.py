@@ -10,6 +10,11 @@ Record layout (little-endian):
 
 The parser stops at the first structural error and raises RecordError;
 a fully valid record yields a RecordSummary.
+
+With include_block_stats=True the same single pass also tallies each
+block's sample count and min/max sample values (None for empty blocks).
+Stats are only ever returned for a fully valid record: any structural
+error aborts the pass with RecordError, so partial stats never escape.
 """
 
 from __future__ import annotations
@@ -42,12 +47,24 @@ class RecordError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
+class BlockStats:
+    """Sample summary for one block, in record order."""
+
+    index: int
+    sample_count: int
+    min: int | None  # None when the block holds no samples
+    max: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class RecordSummary:
     block_count: int
     total_samples: int
+    # Populated only when the caller asked for per-block stats.
+    block_stats: tuple[BlockStats, ...] | None = None
 
 
-def parse_record(data: bytes) -> RecordSummary:
+def parse_record(data: bytes, *, include_block_stats: bool = False) -> RecordSummary:
     """Validate one ACLG record and return its summary.
 
     Raises RecordError with the first problem encountered.
@@ -72,6 +89,7 @@ def parse_record(data: bytes) -> RecordSummary:
     (block_count,) = struct.unpack_from("<H", data, 5)
     offset = HEADER_SIZE
     total_samples = 0
+    stats: list[BlockStats] = []
 
     for index in range(block_count):
         if len(data) - offset < BLOCK_LEN_SIZE:
@@ -92,6 +110,16 @@ def parse_record(data: bytes) -> RecordSummary:
                 f"but only {remaining} bytes remain",
                 block_index=index,
             )
+        if include_block_stats:
+            samples = struct.unpack_from(f"<{sample_count}h", data, offset)
+            stats.append(
+                BlockStats(
+                    index=index,
+                    sample_count=sample_count,
+                    min=min(samples, default=None),
+                    max=max(samples, default=None),
+                )
+            )
         offset += needed
         total_samples += sample_count
 
@@ -102,4 +130,8 @@ def parse_record(data: bytes) -> RecordSummary:
             f"{trailing} unexpected byte(s) after {block_count} declared block(s)",
         )
 
-    return RecordSummary(block_count=block_count, total_samples=total_samples)
+    return RecordSummary(
+        block_count=block_count,
+        total_samples=total_samples,
+        block_stats=tuple(stats) if include_block_stats else None,
+    )

@@ -38,7 +38,8 @@
 
 ### `POST /inspect`
 
-`multipart/form-data`，文件字段名 `file`。
+`multipart/form-data`，文件字段名 `file`。可选查询参数 `include_block_stats=true`
+在放行响应中附加逐块样本摘要（无法解析为布尔值时返回 `422` 参数错误）。
 
 - 合法记录 → `200 OK`：
 
@@ -46,7 +47,19 @@
   {"status": "PASS", "block_count": 2, "total_samples": 5}
   ```
 
-- 结构非法 → `422 Unprocessable Content`：
+- 合法记录且 `?include_block_stats=true` → `200 OK`，按文件顺序附加
+  `block_stats`（零基索引、样本数、最小值、最大值；空块的最小/最大值为 `null`）：
+
+  ```json
+  {"status": "PASS", "block_count": 2, "total_samples": 5,
+   "block_stats": [
+     {"index": 0, "sample_count": 3, "min": -2, "max": 3},
+     {"index": 1, "sample_count": 2, "min": -100, "max": 100}
+   ]}
+  ```
+
+- 结构非法 → `422 Unprocessable Content`（统计随校验同一次遍历完成，
+  一旦报错即整份判 FAIL，绝不返回部分块的摘要）：
 
   ```json
   {"status": "FAIL", "error": {"code": "TRUNCATED_BLOCK", "message": "block 1: ...", "block_index": 1}}

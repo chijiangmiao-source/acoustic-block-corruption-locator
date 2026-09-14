@@ -4,7 +4,7 @@ import struct
 
 import pytest
 
-from app.parser import ErrorCode, RecordError, parse_record
+from app.parser import BlockStats, ErrorCode, RecordError, parse_record
 
 
 def make_record(
@@ -19,6 +19,14 @@ def make_record(
     if declared_blocks is None:
         declared_blocks = len(sample_counts)
     return magic + bytes([version]) + struct.pack("<H", declared_blocks) + body + trailing
+
+
+def make_record_with_samples(blocks: list[list[int]]) -> bytes:
+    body = b"".join(
+        struct.pack("<H", len(samples)) + struct.pack(f"<{len(samples)}h", *samples)
+        for samples in blocks
+    )
+    return b"ACLG" + bytes([1]) + struct.pack("<H", len(blocks)) + body
 
 
 def test_valid_record_with_multiple_blocks():
@@ -127,3 +135,36 @@ def test_maximum_declared_values():
     summary = parse_record(make_record([65535]))
     assert summary.block_count == 1
     assert summary.total_samples == 65535
+
+
+def test_block_stats_not_computed_by_default():
+    record = make_record_with_samples([[1, -2], []])
+    assert parse_record(record).block_stats is None
+    assert parse_record(record, include_block_stats=False).block_stats is None
+
+
+def test_block_stats_cover_extremes_and_empty_blocks_in_order():
+    record = make_record_with_samples([[3, -7, 12], [], [-32768, 0, 32767]])
+    summary = parse_record(record, include_block_stats=True)
+    assert summary.block_count == 3
+    assert summary.total_samples == 6
+    assert summary.block_stats == (
+        BlockStats(index=0, sample_count=3, min=-7, max=12),
+        BlockStats(index=1, sample_count=0, min=None, max=None),
+        BlockStats(index=2, sample_count=3, min=-32768, max=32767),
+    )
+
+
+def test_block_stats_empty_record():
+    summary = parse_record(make_record([]), include_block_stats=True)
+    assert summary.block_stats == ()
+
+
+def test_block_stats_do_not_change_error_priority():
+    # Truncation in block 1 still aborts the pass; no summary (hence no
+    # partial stats for the already-tallied block 0) is ever produced.
+    record = make_record_with_samples([[5, -5], [1, 2, 3, 4]])[:-6]
+    with pytest.raises(RecordError) as excinfo:
+        parse_record(record, include_block_stats=True)
+    assert excinfo.value.code == ErrorCode.TRUNCATED_BLOCK
+    assert excinfo.value.block_index == 1

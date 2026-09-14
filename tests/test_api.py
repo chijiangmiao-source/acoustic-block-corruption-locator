@@ -14,10 +14,19 @@ def make_record(sample_counts: list[int], trailing: bytes = b"") -> bytes:
     return b"ACLG" + bytes([1]) + struct.pack("<H", len(sample_counts)) + body + trailing
 
 
-def post(payload: bytes):
+def make_record_with_samples(blocks: list[list[int]]) -> bytes:
+    body = b"".join(
+        struct.pack("<H", len(samples)) + struct.pack(f"<{len(samples)}h", *samples)
+        for samples in blocks
+    )
+    return b"ACLG" + bytes([1]) + struct.pack("<H", len(blocks)) + body
+
+
+def post(payload: bytes, params: dict[str, str] | None = None):
     return client.post(
         "/inspect",
         files={"file": ("record.aclg", payload, "application/octet-stream")},
+        params=params,
     )
 
 
@@ -94,3 +103,52 @@ def test_over_max_size_returns_413():
 def test_missing_file_field_rejected():
     resp = client.post("/inspect", files={"wrong": ("a.bin", b"ACLG")})
     assert resp.status_code == 422
+
+
+def test_block_stats_included_when_requested():
+    record = make_record_with_samples([[3, -7, 12], [], [-32768, 0, 32767]])
+    resp = post(record, params={"include_block_stats": "true"})
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "status": "PASS",
+        "block_count": 3,
+        "total_samples": 6,
+        "block_stats": [
+            {"index": 0, "sample_count": 3, "min": -7, "max": 12},
+            {"index": 1, "sample_count": 0, "min": None, "max": None},
+            {"index": 2, "sample_count": 3, "min": -32768, "max": 32767},
+        ],
+    }
+
+
+def test_block_stats_omitted_by_default_and_when_false():
+    record = make_record_with_samples([[1, -2]])
+    for params in (None, {"include_block_stats": "false"}):
+        resp = post(record, params=params)
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "PASS", "block_count": 1, "total_samples": 2}
+        assert "block_stats" not in resp.json()
+
+
+def test_block_stats_empty_record_returns_empty_list():
+    resp = post(make_record([]), params={"include_block_stats": "true"})
+    assert resp.status_code == 200
+    assert resp.json()["block_stats"] == []
+
+
+def test_unparseable_include_block_stats_returns_422():
+    resp = post(make_record([1]), params={"include_block_stats": "maybe"})
+    assert resp.status_code == 422
+    errors = resp.json()["detail"]
+    assert any(e["loc"][-1] == "include_block_stats" for e in errors)
+
+
+def test_failed_record_never_carries_block_stats():
+    # Block 0 tallied fine, block 1 truncated: only the error is reported.
+    record = make_record_with_samples([[5, -5], [1, 2, 3, 4]])[:-6]
+    resp = post(record, params={"include_block_stats": "true"})
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error"]["code"] == "TRUNCATED_BLOCK"
+    assert body["error"]["block_index"] == 1
+    assert "block_stats" not in body

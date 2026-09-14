@@ -23,10 +23,19 @@ def make_record(
     return magic + bytes([version]) + struct.pack("<H", declared_blocks) + body + trailing
 
 
-def inspect(client, payload: bytes):
+def make_record_with_samples(blocks: list[list[int]]) -> bytes:
+    body = b"".join(
+        struct.pack("<H", len(samples)) + struct.pack(f"<{len(samples)}h", *samples)
+        for samples in blocks
+    )
+    return b"ACLG" + bytes([1]) + struct.pack("<H", len(blocks)) + body
+
+
+def inspect(client, payload: bytes, params: dict[str, str] | None = None):
     return client.post(
         "/inspect",
         files={"file": ("record.aclg", payload, "application/octet-stream")},
+        params=params,
     )
 
 
@@ -122,3 +131,46 @@ def test_upload_over_size_limit_returns_413(client):
     assert len(payload) == MAX_UPLOAD_BYTES + 1
     resp = inspect(client, payload)
     assert resp.status_code == 413
+
+
+def test_block_stats_accurate_and_in_file_order(client):
+    # Positive/negative int16 extremes plus an empty block in the middle.
+    record = make_record_with_samples([[3, -7, 12], [], [-32768, 0, 32767]])
+    resp = inspect(client, record, params={"include_block_stats": "true"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["block_count"] == 3
+    assert body["total_samples"] == 6
+    assert body["block_stats"] == [
+        {"index": 0, "sample_count": 3, "min": -7, "max": 12},
+        {"index": 1, "sample_count": 0, "min": None, "max": None},
+        {"index": 2, "sample_count": 3, "min": -32768, "max": 32767},
+    ]
+
+
+def test_default_response_gains_no_block_stats_field(client):
+    resp = inspect(client, make_record_with_samples([[1, -2]]))
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "PASS", "block_count": 1, "total_samples": 2}
+
+    resp = inspect(client, make_record_with_samples([[1, -2]]), params={"include_block_stats": "false"})
+    assert resp.status_code == 200
+    assert "block_stats" not in resp.json()
+
+
+def test_truncated_tail_reports_only_the_error_without_block_stats(client):
+    # Block 0 parses cleanly; block 1 is cut short. Even with stats requested,
+    # the failure carries no partial per-block summary.
+    record = make_record_with_samples([[5, -5], [1, 2, 3, 4]])[:-6]
+    resp = inspect(client, record, params={"include_block_stats": "true"})
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["status"] == "FAIL"
+    assert body["error"]["code"] == "TRUNCATED_BLOCK"
+    assert body["error"]["block_index"] == 1
+    assert "block_stats" not in body
+
+
+def test_unparseable_include_block_stats_returns_422(client):
+    resp = inspect(client, make_record([1]), params={"include_block_stats": "maybe"})
+    assert resp.status_code == 422
